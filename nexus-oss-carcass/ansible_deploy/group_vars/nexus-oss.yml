@@ -1,0 +1,61 @@
+# Apt config for install packages
+srv:
+  repo_addr: 1.1.1.87
+  hosts:
+    MASTER_HOSTNAMES: "srv-nexus-oss-001.ha.example.com srv-nexus-oss-001.ha srv-nexus-oss-001 nexus-001 nexus-1 nexus"
+    BACKUP_HOSTNAMES: "srv-nexus-oss-002.ha.example.com srv-nexus-oss-002.ha srv-nexus-oss-002 nexus-002 nexus-2 srv-nexus-002"
+    VIP_HOSTNAMES: "srv-nexus-oss-vip.ha.example.com srv-nexus-oss-vip.ha srv-nexus-oss-vip nexus-oss-vip nexus-vip nexusvip"
+    CONFIDIANT_HOSTNAMES: "srv-confidiant-002.ha.example.com srv-confidiant-002.ha srv-confidiant-002 confidiant-002 confidiant-2 confidiant"
+    MASTER_HOSTNAME: "srv-nexus-oss-001.ha.example.com"
+    BACKUP_HOSTNAME: "srv-nexus-oss-002.ha.example.com"
+    VIP_HOSTNAME: "srv-nexus-oss-vip.ha.example.com"
+    CONFIDIANT_HOSTNAME: "srv-confidiant-002.ha.example.com"
+ # Rsync config
+  rsync:
+    RSYNCD_AUTH_USER: "nobody"
+    RSYNCD_AUTH_PASSWD: "YOUR_PASS"
+# Carcass ha-script for keepalived config
+  carcass:
+    FAULT_GENERAL_TOLERANCE: "8"
+    FAULT_CRITICAL_TOLERANCE: "1"
+    FAULT_LIFECYCLE_TOLERANCE: "2"
+    POD_NAME: "YOUR_NAME"
+    PING_PACKAGE_COUNT: "1"
+    PING_TIMEOUT: "3"
+    MASTER_ADDR: "1.1.1.87"
+    BACKUP_ADDR: "1.1.1.5"
+    CLUSTER_VIP: "1.1.1.10"
+    CONFIDANT_ADDR: "1.1.1.176"
+    USER_AUTH: "barabashka:YOUR_PASS"
+    LOCAL_INTERFACE: "eth0"
+    REQUEST_TIMEOUT: "3"
+  keepalived_general:
+  ### - TRACK SCRIPT SECTION - ###
+# Specifies the command along with any arguments to be executed as Check script.
+    check_command: '"/usr/local/sbin/carcass"'
+# Time in seconds to repeat execution of script. In this example haproxy state checked every 2 seconds
+    check_interval: '5'
+# Specified the number by which current priority of router will be reduced after entering FAULT state.
+    node_weight: '70'
+# Specified the number of attempts (with zero exit code returned by script) before exiting the ROUTER from FAULT state.
+    rise_count: '2'
+# Specified the number of attempts (with non-zero exit code returned by script) before changing the Router to FAULT state.
+    fall_count: '1'
+# Router will wait for number of seconds specified as timeout value before considering the script exit code as non-zero.
+    considering_timeout: '2'
+  ### - VRRP INSTANCE SECTION - ###
+# VRRP Instanse name
+    vrrp_instance_name: 'YOUR_POD'
+# Virtual IP Address will be assigned to network interface defined against interfaceproperty. 
+    vrrp_interface: 'eth0'
+# Assign one ID for this route
+    vrrp_id: '60'
+  ### - HA AUTHENTICATION SECTION - ###
+# Specifies the password for password authentication of current VRRP router. Must be not longer than 8 symbols, else not work.
+    auth_pass: 'YOUR_PASS'
+  ### - VIP ADDR SECTION - ###
+# The virtual IP with params for internal connections for clients
+    vrrp_vip_params: '1.1.1.10/24 dev eth0'
+   ### - TRACK INTERFACE SECTION - ###
+# The network interface to be tracked
+    track_interface: 'eth0'

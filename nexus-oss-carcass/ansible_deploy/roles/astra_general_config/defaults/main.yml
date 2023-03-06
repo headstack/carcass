@@ -1,0 +1,38 @@
+resize_part:
+  - { dev: '/dev/vda', num: '2', end: "100%", type: "extended" }
+  - { dev: '/dev/vda', num: '5', end: "100%", type: "logical" }
+
+pv_part:
+  - { vg: 'astra-test-vg', pv: '/dev/vda5', resize: "yes" }
+  - { vg: 'astra-test-vg', pv: '/dev/vdb1', resize: "yes" }
+
+# Users to be added
+users_info:
+#Example
+#  - { user: 'user', group: sudo, home: '/home/user/', comment: 'user@example.com', pubkey: 'sshkey' }
+  - { user: 'user', group: sudo, home: '/home/user/', comment: 'user@example.com', pubkey: 'sshkey' }
+
+pdp_id_level:
+    - user
+    - root
+    - astra
+
+apt_keys:
+  local:
+    - files/key.gpg
+    - files/key.gpg
+  remote:
+    - /root/key.gpg
+    - /root/key.gpg
+
+apt_deps:
+  - telnet
+  - htop
+  - iotop
+  - lsof
+  - nmap
+  - pwgen
+  - tcpdump
+  - python3
+  - sshpass
+  - rsync

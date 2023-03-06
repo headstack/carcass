@@ -1,0 +1,457 @@
+#!/bin/bash
+
+# PREREQUISITS CHECK
+if [[ ! -d "/etc/carcass/" ]]; then
+  echo -e "Config directory /etc/carcass/ does not exist for carcass cluster controller!"
+  exit 1
+elif [[ ! -f "/etc/carcass/carcass.conf" ]]; then
+  echo -e "Config for carcass cluster controller does not exist in path /etc/carcass/!"
+  exit 1
+else
+source /etc/carcass/carcass.conf
+fi
+
+if [[ ! -d "$LOG_DIR" ]]; then
+  mkdir -p "$LOG_DIR"
+elif [[ ! -d "$CURRENT_LOG_DIR" ]]; then
+  mkdir -p "$CURRENT_LOG_DIR"
+elif [[ ! -f "$CURRENT_LOG_FILE" ]]; then
+  echo -e "$INFO_MESSAGE New log file has been created" >> "$CURRENT_LOG_FILE"
+elif [[ ! -f "$CHECK_FILE_PATH" ]]; then
+ touch "$CURRENT_LOG_FILE" 
+  echo -e "$INFO_MESSAGE New ha check txt file has been created in $CHECK_FILE_PATH" >> "$CURRENT_LOG_FILE"
+elif [[ ! -z "$POD_NAME" ]]; then 
+  echo -e "\n$INFO_MESSAGE  Start check tasks. Name of POD is - $POD_NAME" >> "$CURRENT_LOG_FILE"
+elif [[ "$(systemctl status docker | grep running | awk '{print $3}')" != "(running)" ]]; then
+  echo -e "$ERROR_MESSAGE Your docker-ce is not running! Exit with code 1!" >> "$CURRENT_LOG_FILE"
+  exit 1
+elif [[ "$(systemctl status rsync | grep running | awk '{print $3}')" != "(running)" ]]; then
+  echo -e "$ERROR_MESSAGE Your rsync is not running! Exit with code 1!" >> "$CURRENT_LOG_FILE"
+  exit 1
+fi
+
+# Variables of the logical state
+MASTER_CHECK=$(grep "state MASTER" /etc/keepalived/keepalived.conf | awk '{ print $2 }')
+BACKUP_CHECK=$(grep "state BACKUP" /etc/keepalived/keepalived.conf | awk '{ print $2 }')
+DO_I_HAVE_A_VIP=$(ip a | grep secondary | awk '{print $2}' | sed "s|\/.*||g")
+
+if [[ "$MASTER_CHECK" = "MASTER" ]]; then
+  echo -e "$INFO_MESSAGE This node is the MASTER" >> "$CURRENT_LOG_FILE" && ((MASTER_CHECK_COUNT++))
+elif [[ "$BACKUP_CHECK" = "BACKUP" ]]; then
+  echo -e "$INFO_MESSAGE This node is the BACKUP" >> "$CURRENT_LOG_FILE" && ((BACKUP_CHECK_COUNT++)); fi
+if [[ ! -z "$DO_I_HAVE_A_VIP" ]]; then
+  echo -e "$INFO_MESSAGE Seems what i'm ACTIVE MASTER node with VIP - $DO_I_HAVE_A_VIP" >> "$CURRENT_LOG_FILE" && ((VIP_CHECK_COUNT++))
+else
+  echo -e "$INFO_MESSAGE Seems what i'm not ACTIVE MASTER NODE" >> "$CURRENT_LOG_FILE" && ((VIP_CHECK_COUNT--))   
+fi 
+
+# CHECK EXECUTION
+# Fast check HTTP status code of nexus-oss response. If nexus do not answer, then check network
+echo -e "$NOTICE_MESSAGE Start fast check of nexus HTTP status code" >> "$CURRENT_LOG_FILE"
+
+curl --connect-timeout $REQUEST_TIMEOUT --interface $LOCAL_INTERFACE -I -X "GET" -u "$USER_AUTH" \
+ "http://$CHECK_ADDR/service/rest/v1/status/check" -H "accept: application/json" -o "$CHECK_FILE_PATH" >/dev/null 2>&1
+
+CURL_CHECK_STATUS=$(echo $?)
+
+if ! [[ "$CURL_CHECK_STATUS" -eq 0 ]]; then
+  echo -e "$ERROR_MESSAGE Fast check of nexus server components status FAILED. See API response in log - $CHECK_FILE_PATH. Exit with code 1" >> "$CURRENT_LOG_FILE"
+  exit 1
+fi
+
+echo -e "$INFO_MESSAGE Generate fast check of nexus HTTP status code result" >> "$CURRENT_LOG_FILE"
+
+FAST_CHECK_RESULT=$(grep "HTTP/1.1" "$CHECK_FILE_PATH" | awk '{print $2}')
+
+echo -e "$INFO_MESSAGE Check result of nexus HTTP status code" >> "$CURRENT_LOG_FILE"
+
+if [[ "$FAST_CHECK_RESULT" != "200" ]]; then
+  echo -e "$ERROR_MESSAGE Fast check HTTP status code of nexus-oss response: $FAST_CHECK_RESULT" >> "$CURRENT_LOG_FILE"
+  echo -e "$NOTICE_MESSAGE Start check of network consistency" >> "$CURRENT_LOG_FILE"
+  # NETWORK CHECK
+  for net_check_addr in "${ALL_NET_CHECK_ADDRS[@]}"; do
+    check=$(ping -c "$PING_PACKAGE_COUNT" -W "$PING_TIMEOUT" -q "$net_check_addr" | grep received | awk '{print $4,$5}' | sed 's|,||')
+      if [[ "$check" = "0 received" ]]; then
+        case "$net_check_addr" in
+          "${ALL_NET_CHECK_ADDRS[0]}" )
+            if [[ "$MASTER_CHECK_COUNT" = "1" ]]; then
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. This is the MASTER node. I'm MASTER!" >> "$CURRENT_LOG_FILE"
+              echo -e "$CRITICAL_MESSAGE My MASTER network interface is not available. Try switch over to BACKUP node with addr ${ALL_NET_CHECK_ADDRS[1]} running. Exit with code 1 and send this signal to keepalived application" >> "$CURRENT_LOG_FILE"
+              exit 1
+            else
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. I'm BACKUP." >> "$CURRENT_LOG_FILE"
+              ((MASTER_IS_ALIVE--))
+              echo -e "$CRITICAL_MESSAGE MASTER network interface is not available. I'm BACKUP. Set MASTER unavailable bit to $MASTER_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[1]}" )
+            if [[ "$BACKUP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. This is the BACKUP node. I'm BACKUP!" >> "$CURRENT_LOG_FILE"
+              echo -e "$CRITICAL_MESSAGE My BACKUP network interface is not available. Try switch over to MASTER node with addr ${ALL_NET_CHECK_ADDRS[0]} running. Exit with code 1 and send this signal to keepalived application" >> "$CURRENT_LOG_FILE"
+              exit 1
+             else
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. This is the BACKUP node. I'm MASTER." >> "$CURRENT_LOG_FILE"
+              ((BACKUP_IS_ALIVE--))
+              echo -e "$CRITICAL_MESSAGE BACKUP network interface is not available. I'm MASTER. Set BACKUP unavailable bit to $BACKUP_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[2]}" ) 
+            if [[ "$VIP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$CRITICAL_MESSAGE VIP Addr $net_check_addr is not available" >> "$CURRENT_LOG_FILE"
+              echo -e "$CRITICAL_MESSAGE VIP Addr is unavailable! Send this signal to keepalived application" >> "$CURRENT_LOG_FILE"
+             else
+              echo -e "$CRITICAL_MESSAGE VIP Addr $net_check_addr is not available." >> "$CURRENT_LOG_FILE"
+              ((VIP_IS_ALIVE--))
+              echo -e "$CRITICAL_MESSAGE VIP ADDR is not available. Set VIP unavailable bit to $VIP_IS_ALIVE and exit with code 1" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[3]}" ) 
+              echo -e "$WARNING_MESSAGE CONFIDANT Addr $net_check_addr is not available." >> "$CURRENT_LOG_FILE"
+              ((CONFIDANT_IS_ALIVE--))
+              echo -e "$WARNING_MESSAGE CONFIDANT ADDR is not available. Set CONFIDANT unavailable bit to $CONFIDANT_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+        esac
+        else
+        case "$net_check_addr" in
+          "${ALL_NET_CHECK_ADDRS[0]}" )
+            if [[ "$MASTER_CHECK_COUNT" = "1" ]]; then
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. This is the MASTER node. I'm MASTER!" >> "$CURRENT_LOG_FILE"
+              ((MASTER_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE My MASTER network interface available. Set MASTER availability bit to $MASTER_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            else
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. I'm BACKUP." >> "$CURRENT_LOG_FILE"
+              ((MASTER_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE MASTER network interface available. I'm BACKUP. Set MASTER availability bit to $MASTER_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[1]}" )
+            if [[ "$BACKUP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. This is the BACKUP node. I'm BACKUP!" >> "$CURRENT_LOG_FILE"
+              ((BACKUP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE My BACKUP network interface available. Set BACKUP availability bit to $BACKUP_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+             else
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. This is the BACKUP node. I'm MASTER." >> "$CURRENT_LOG_FILE"
+              ((BACKUP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE BACKUP network interface available. I'm MASTER. Set BACKUP availability bit to $BACKUP_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[2]}" ) 
+            if [[ "$VIP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$SUCCESS_MESSAGE VIP Addr $net_check_addr available" >> "$CURRENT_LOG_FILE"
+              ((VIP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE VIP Addr is available! And i have a VIP!" >> "$CURRENT_LOG_FILE"
+              else
+              echo -e "$SUCCESS_MESSAGE VIP Addr $net_check_addr available." >> "$CURRENT_LOG_FILE"
+              ((VIP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE VIP ADDR available. Set VIP availability bit to $VIP_IS_ALIVE. I do not have VIP!" >> "$CURRENT_LOG_FILE"
+             fi;;
+          "${ALL_NET_CHECK_ADDRS[3]}" ) 
+              echo -e "$SUCCESS_MESSAGE CONFIDANT Addr $net_check_addr available." >> "$CURRENT_LOG_FILE"
+              ((CONFIDANT_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE CONFIDANT ADDR available. Set CONFIDANT availability bit to $CONFIDANT_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+        esac
+      fi
+  done
+else
+  echo -e "$SUCCESS_MESSAGE Fast check HTTP status code of nexus-oss response: $FAST_CHECK_RESULT" >> "$CURRENT_LOG_FILE"
+  # NETWORK CHECK
+  if [[ "$NETWORK_CHECK" = "DEBUG" ]]; then
+  echo -e "$NOTICE_MESSAGE Start check network part 1 in DEBUG mode because \"NETWORK_CHECK\" parameter is set to DEBUG." >> "$CURRENT_LOG_FILE"
+  for net_check_addr in "${ALL_NET_CHECK_ADDRS[@]}"; do
+    check=$(ping -c "$PING_PACKAGE_COUNT" -W "$PING_TIMEOUT" -q "$net_check_addr" | grep received | awk '{print $4,$5}' | sed 's|,||')
+      if [[ "$check" = "0 received" ]]; then
+        case "$net_check_addr" in
+          "${ALL_NET_CHECK_ADDRS[0]}" )
+            if [[ "$MASTER_CHECK_COUNT" = "1" ]]; then
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. This is the MASTER node. I'm MASTER!" >> "$CURRENT_LOG_FILE"
+              echo -e "$CRITICAL_MESSAGE My MASTER network interface is not available. Try switch over to BACKUP node with addr ${ALL_NET_CHECK_ADDRS[1]} running. Exit with code 1 and send this signal to keepalived application" >> "$CURRENT_LOG_FILE"
+              exit 1
+            else
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. I'm BACKUP." >> "$CURRENT_LOG_FILE"
+              ((MASTER_IS_ALIVE--))
+              echo -e "$CRITICAL_MESSAGE MASTER network interface is not available. I'm BACKUP. Set MASTER unavailable bit to $MASTER_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[1]}" )
+            if [[ "$BACKUP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. This is the BACKUP node. I'm BACKUP!" >> "$CURRENT_LOG_FILE"
+              echo -e "$CRITICAL_MESSAGE My BACKUP network interface is not available. Try switch over to MASTER node with addr ${ALL_NET_CHECK_ADDRS[0]} running. Exit with code 1 and send this signal to keepalived application" >> "$CURRENT_LOG_FILE"
+              exit 1
+             else
+              echo -e "$CRITICAL_MESSAGE Addr $net_check_addr is not available. This is the BACKUP node. I'm MASTER." >> "$CURRENT_LOG_FILE"
+              ((BACKUP_IS_ALIVE--))
+              echo -e "$CRITICAL_MESSAGE BACKUP network interface is not available. I'm MASTER. Set BACKUP unavailable bit to $BACKUP_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[2]}" ) 
+            if [[ "$VIP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$CRITICAL_MESSAGE VIP Addr $net_check_addr is not available" >> "$CURRENT_LOG_FILE"
+              echo -e "$CRITICAL_MESSAGE VIP Addr is unavailable! Send signal to keepalived application" >> "$CURRENT_LOG_FILE"
+             else
+              echo -e "$CRITICAL_MESSAGE VIP Addr $net_check_addr is not available." >> "$CURRENT_LOG_FILE"
+              ((VIP_IS_ALIVE--))
+              echo -e "$CRITICAL_MESSAGE VIP ADDR is not available. Set VIP unavailable bit to $VIP_IS_ALIVE and exit with code 1" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[3]}" ) 
+              echo -e "$WARNING_MESSAGE CONFIDANT Addr $net_check_addr is not available." >> "$CURRENT_LOG_FILE"
+              ((CONFIDANT_IS_ALIVE--))
+              echo -e "$WARNING_MESSAGE CONFIDANT ADDR is not available. Set CONFIDANT unavailable bit to $CONFIDANT_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+        esac
+        else
+        case "$net_check_addr" in
+          "${ALL_NET_CHECK_ADDRS[0]}" )
+            if [[ "$MASTER_CHECK_COUNT" = "1" ]]; then
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. This is the MASTER node. I'm MASTER!" >> "$CURRENT_LOG_FILE"
+              ((MASTER_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE My MASTER network interface available. Set MASTER availability bit to $MASTER_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            else
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. I'm BACKUP." >> "$CURRENT_LOG_FILE"
+              ((MASTER_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE MASTER network interface available. I'm BACKUP. Set MASTER availability bit to $MASTER_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[1]}" )
+            if [[ "$BACKUP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. This is the BACKUP node. I'm BACKUP!" >> "$CURRENT_LOG_FILE"
+              ((BACKUP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE My BACKUP network interface available. Set BACKUP availability bit to $BACKUP_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+             else
+              echo -e "$SUCCESS_MESSAGE Addr $net_check_addr available. This is the BACKUP node. I'm MASTER." >> "$CURRENT_LOG_FILE"
+              ((BACKUP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE BACKUP network interface available. I'm MASTER. Set BACKUP availability bit to $BACKUP_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+            fi;;
+          "${ALL_NET_CHECK_ADDRS[2]}" ) 
+            if [[ "$VIP_CHECK_COUNT" = "1" ]]; then
+              echo -e "$SUCCESS_MESSAGE VIP Addr $net_check_addr available" >> "$CURRENT_LOG_FILE"
+              ((VIP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE VIP Addr is available! And i have a VIP!" >> "$CURRENT_LOG_FILE"
+              else
+              echo -e "$SUCCESS_MESSAGE VIP Addr $net_check_addr available." >> "$CURRENT_LOG_FILE"
+              ((VIP_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE VIP ADDR available. Set VIP availability bit to $VIP_IS_ALIVE. I do not have VIP!" >> "$CURRENT_LOG_FILE"
+             fi;;
+          "${ALL_NET_CHECK_ADDRS[3]}" ) 
+              echo -e "$SUCCESS_MESSAGE CONFIDANT Addr $net_check_addr available." >> "$CURRENT_LOG_FILE"
+              ((CONFIDANT_IS_ALIVE++))
+              echo -e "$SUCCESS_MESSAGE CONFIDANT ADDR available. Set CONFIDANT availability bit to $CONFIDANT_IS_ALIVE" >> "$CURRENT_LOG_FILE"
+        esac
+      fi
+  done
+  else 
+    echo -e "$NOTICE_MESSAGE Network check is disabled when nexus-oss HTTP status code is equal 200. It's normally workflow. Next job.." >> "$CURRENT_LOG_FILE"
+  fi
+fi
+
+# NETWORK CHECK PART 2
+if [[ "$NETWORK_CHECK" = "DEBUG" ]]; then
+  echo -e "$NOTICE_MESSAGE Start check network part 2 in DEBUG mode because \"NETWORK_CHECK\" parameter is set to DEBUG." >> "$CURRENT_LOG_FILE"
+# MASTER'S CHECK
+# MASTER - ALIVE, BACKUP - ALIVE, CONFIDANT - ALIVE, VIP - N/A|NO INFO
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO VIP. CLUSTER ASSEMBLED?"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+# MASTER - ALIVE, BACKUP - N/A, CONFIDANT - ALIVE, VIP - AVAIL|MASTER
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "-1" ]] && [[ "$VIP_IS_ALIVE" = "1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO REPLICA"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - ALIVE, BACKUP - N/A, CONFIDANT - N/A, VIP - AVAIL|MASTER 
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "-1" ]] && [[ "$VIP_IS_ALIVE" = "1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO REPLICA, NO CONFIDANT, BUT MASTER HOLD VIP"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - ALIVE, BACKUP - N/A, CONFIDANT - N/A, VIP - N/A|NO INFO
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "-1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO REPLICA, NO CONFIDANT, NO VIP, MASTER LOST CLUSTER MEMBERS"
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO VIP. CLUSTER ASSEMBLED?"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1. Switch over on BACKUP NODE." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+# REPLICA'S CHECK
+# MASTER - ALIVE, BACKUP - ALIVE, CONFIDANT - ALIVE, VIP - N/A|NO INFO
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO VIP. CLUSTER ASSEMBLED?"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+# MASTER - N/A, BACKUP - ALIVE, CONFIDANT - ALIVE, VIP - AVAIL|BACKUP
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "-1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT BUT NO MASTER, REPLICA - TEMP MASTER"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - N/A, BACKUP - ALIVE, CONFIDANT - N/A, VIP - AVAIL|BACKUP
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "-1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO MASTER, NO CONFIDANT, BUT REPLICA - TEMP MASTER AND HOLD VIP"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - N/A, BACKUP - ALIVE, CONFIDANT - N/A, VIP - N/A|NO INFO
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "-1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO MASTER, NO CONFIDANT, NO VIP, REPLICA LOST CLUSTER MEMBERS"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1. Switch over on MASTER NODE." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+else
+ echo -e "$NOTICE_MESSAGE Start check network part" >> "$CURRENT_LOG_FILE"
+# MASTER'S CHECK
+# MASTER - ALIVE, BACKUP - ALIVE, CONFIDANT - ALIVE, VIP - N/A|NO INFO
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO VIP. CLUSTER ASSEMBLED?"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+# MASTER - ALIVE, BACKUP - N/A, CONFIDANT - ALIVE, VIP - AVAIL|MASTER
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "-1" ]] && [[ "$VIP_IS_ALIVE" = "1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO REPLICA"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - ALIVE, BACKUP - N/A, CONFIDANT - N/A, VIP - AVAIL|MASTER 
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "-1" ]] && [[ "$VIP_IS_ALIVE" = "1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO REPLICA, NO CONFIDANT, BUT MASTER HOLD VIP"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - ALIVE, BACKUP - N/A, CONFIDANT - N/A, VIP - N/A|NO INFO
+  if [[ "$MASTER_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "-1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO REPLICA, NO CONFIDANT, NO VIP, MASTER LOST CLUSTER MEMBERS"
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO VIP. CLUSTER ASSEMBLED?"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1. Switch over on BACKUP NODE." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+# REPLICA'S CHECK
+# MASTER - ALIVE, BACKUP - ALIVE, CONFIDANT - ALIVE, VIP - N/A|NO INFO
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT, BUT NO VIP. CLUSTER ASSEMBLED?"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+# MASTER - N/A, BACKUP - ALIVE, CONFIDANT - ALIVE, VIP - AVAIL|BACKUP
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "-1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="CONSISTENT BUT NO MASTER, REPLICA - TEMP MASTER"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - N/A, BACKUP - ALIVE, CONFIDANT - N/A, VIP - AVAIL|BACKUP
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "-1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO MASTER, NO CONFIDANT, BUT REPLICA - TEMP MASTER AND HOLD VIP"
+       echo -e "$SUCCESS_MESSAGE Cluster network health is OK!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$SUCCESS_MESSAGE Continue" >> "$CURRENT_LOG_FILE"
+  fi
+# MASTER - N/A, BACKUP - ALIVE, CONFIDANT - N/A, VIP - N/A|NO INFO
+  if [[ "$BACKUP_CHECK_COUNT" = "1" ]] && [[ "$VIP_CHECK_COUNT" = "-1" ]] && [[ "$CONFIDANT_IS_ALIVE" = "-1" ]] && \
+     [[ "$MASTER_IS_ALIVE" = "-1" ]] && [[ "$BACKUP_IS_ALIVE" = "1" ]] && [[ "$VIP_IS_ALIVE" = "-1" ]]; then
+       CLUSTER_NETWORK_STATE="NO CONSISTENT, NO MASTER, NO CONFIDANT, NO VIP, REPLICA LOST CLUSTER MEMBERS"
+       echo -e "$ERROR_MESSAGE Cluster network health is BAD!" >> "$CURRENT_LOG_FILE"
+       echo -e "$INFO_MESSAGE Summary about cluster network health: $CLUSTER_NETWORK_STATE" >> "$CURRENT_LOG_FILE"
+       echo -e "$ERROR_MESSAGE Exit with code 1. Switch over on MASTER NODE." >> "$CURRENT_LOG_FILE"
+       exit 1
+  fi
+fi
+
+# FULL CHECK 
+echo -e "$NOTICE_MESSAGE Start full check of nexus server components status" >> "$CURRENT_LOG_FILE"
+
+curl --connect-timeout $REQUEST_TIMEOUT --interface $LOCAL_INTERFACE -vvv -X "GET" -u "$USER_AUTH" \
+ "http://$CHECK_ADDR/service/rest/v1/status/check" -H "accept: application/json" -o "$CHECK_FILE_PATH" >/dev/null 2>&1
+
+CURL_CHECK_STATUS=$(echo $?)
+
+if ! [[ "$CURL_CHECK_STATUS" -eq 0 ]]; then
+  echo -e "$ERROR_MESSAGE Full check of nexus server components status FAILED. See API response in log - $CHECK_FILE_PATH. Exit with code 1" >> "$CURRENT_LOG_FILE"
+  exit 1
+fi
+
+echo -e "$NOTICE_MESSAGE Mapping array of nexus services" >> "$CURRENT_LOG_FILE"
+
+mapfile -t FULL_CHECK_LIST < <(grep "\" : {" "$CHECK_FILE_PATH" | sed "s|\s: {||")
+SERVICES_GENERAL_COUNT=${#FULL_CHECK_LIST[*]}
+SERVICES_CRITICAL_COUNT=${#CRITICAL_SERVICES[*]}
+SERVICES_LIFECYCLE_COUNT=${#LIFECYCLE_SERVICES[*]}
+
+echo -e "$INFO_MESSAGE Count of all nexus services is - $SERVICES_GENERAL_COUNT. From this $SERVICES_CRITICAL_COUNT - critical services and $SERVICES_LIFECYCLE_COUNT - lifecycle services" >> "$CURRENT_LOG_FILE"
+
+echo -e "$NOTICE_MESSAGE Start full health check cycle" >> "$CURRENT_LOG_FILE"
+
+for service in "${FULL_CHECK_LIST[@]}"; do
+  FULL_CHECK_RESULT=$(grep -A 1 "$service" "$CHECK_FILE_PATH" | grep "true" | sed "s|,||; s|\"||g; s|\s||g;")
+  if [[ "$FULL_CHECK_RESULT" = "healthy:true" ]]; then ((GENERAL_SERVICES_HEALTH++))
+  else
+    for critical_service in "${CRITICAL_SERVICES[@]}"; do
+      if [[ "$service" = "$critical_service" ]]; then ((CRITICAL_SERVICES_HEALTH++))
+          echo -e "$WARNING_MESSAGE Service module of nexus-oss named by $critical_service is down" >> "$CURRENT_LOG_FILE"
+          break
+      fi
+    done
+    for lifecycle_service in "${LIFECYCLE_SERVICES[@]}"; do
+      if [[ "$service" = "$lifecycle_service" ]]; then ((LIFECYCLE_SERVICES_HEALTH++)) 
+        echo -e "$CRITICAL_MESSAGE Service module of nexus-oss named by $critical_service is down" >> "$CURRENT_LOG_FILE"
+        break
+      fi
+    done
+  fi 
+done
+
+# DECISION MAKING ON GENERAL SERVICES
+if [[ "$GENERAL_SERVICES_HEALTH" -lt "$FAULT_GENERAL_TOLERANCE" ]]; then
+  echo -e "$CRITICAL_MESSAGE Working general services count is: $GENERAL_SERVICES_HEALTH/$SERVICES_GENERAL_COUNT" >> "$CURRENT_LOG_FILE"
+else
+  echo -e "$SUCCESS_MESSAGE Working general services count is: $GENERAL_SERVICES_HEALTH/$SERVICES_GENERAL_COUNT" >> "$CURRENT_LOG_FILE"
+fi
+
+# DECISION MAKING ON CRITICAL SERVICES
+if [[ ! -z "$CRITICAL_SERVICES_HEALTH" ]]; then
+    if [[ "$CRITICAL_SERVICES_HEALTH" -le "$FAULT_CRITICAL_TOLERANCE" ]]; then
+      echo -e "$CRITICAL_MESSAGE Down critical services count is: $CRITICAL_SERVICES_HEALTH/$SERVICES_CRITICAL_COUNT" >> "$CURRENT_LOG_FILE"
+      echo -e "$CRITICAL_MESSAGE Switch over on BACKUP NODE. Exit with code 1." >> "$CURRENT_LOG_FILE"
+      exit 1
+    else
+      echo -e "$WARNING_MESSAGE Down critical services count is: $CRITICAL_SERVICES_HEALTH/$SERVICES_CRITICAL_COUNT" >> "$CURRENT_LOG_FILE"
+    fi
+    elif [[ -z "$CRITICAL_SERVICES_HEALTH" ]]; then echo -e "$SUCCESS_MESSAGE Working critical services count is: $SERVICES_CRITICAL_COUNT/$SERVICES_CRITICAL_COUNT" >> "$CURRENT_LOG_FILE" 
+fi
+
+# DECISION MAKING ON LIFECYCLE SERVICES
+if [[ ! -z "$LIFECYCLE_SERVICES_HEALTH" ]]; then
+    if [[ "$LIFECYCLE_SERVICES_HEALTH" -le "$FAULT_LIFECYCLE_TOLERANCE" ]]; then
+      echo -e "$CRITICAL_MESSAGE Down lifecycle services count is: $LIFECYCLE_SERVICES_HEALTH/$SERVICES_LIFECYCLE_COUNT" >> "$CURRENT_LOG_FILE"
+      echo -e "$CRITICAL_MESSAGE Switch over on BACKUP NODE. Exit with code 1." >> "$CURRENT_LOG_FILE"
+      exit 1
+    else
+      echo -e "$WARNING_MESSAGE Down lifecycle services count is: $LIFECYCLE_SERVICES_HEALTH/$SERVICES_LIFECYCLE_COUNT" >> "$CURRENT_LOG_FILE"
+    fi
+    elif [[ -z "$LIFECYCLE_SERVICES_HEALTH" ]]; then echo -e "$SUCCESS_MESSAGE Working lifecycle services count is: $SERVICES_LIFECYCLE_COUNT/$SERVICES_LIFECYCLE_COUNT" >> "$CURRENT_LOG_FILE" 
+fi

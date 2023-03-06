@@ -1,0 +1,10 @@
+#!/bin/bash
+
+echo -e "[Unit]
+Description= Tracking NEXUS-OSS REPODATA Files Changes
+
+[Path]
+$(cd /var/lib/docker/volumes/nexus-data/_data/ && find ./ -maxdepth 1 -type d | sed 's|\.\/|PathModified=/var/lib/docker/volumes/nexus-data/_data/|')
+
+[Install]
+WantedBy=multi-user.target" > /etc/systemd/system/nexus-oss-watch.path && systemctl daemon-reload

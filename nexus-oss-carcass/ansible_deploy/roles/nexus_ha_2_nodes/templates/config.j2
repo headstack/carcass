@@ -1,0 +1,19 @@
+Host {{ srv.hosts.MASTER_HOSTNAME }}
+  Hostname {{ srv.carcass.MASTER_ADDR }}
+  PreferredAuthentications publickey
+  IdentityFile ~/.ssh/cluster_auth
+
+Host {{ srv.hosts.BACKUP_HOSTNAME }}
+  Hostname {{ srv.carcass.BACKUP_ADDR }}
+  PreferredAuthentications publickey
+  IdentityFile ~/.ssh/cluster_auth
+
+Host {{ srv.carcass.MASTER_ADDR }}
+  Hostname {{ srv.carcass.MASTER_ADDR }}
+  PreferredAuthentications publickey
+  IdentityFile ~/.ssh/cluster_auth
+
+Host {{ srv.carcass.BACKUP_ADDR }}
+  Hostname {{ srv.carcass.BACKUP_ADDR }}
+  PreferredAuthentications publickey
+  IdentityFile ~/.ssh/cluster_auth

@@ -1,0 +1,23 @@
+---
+
+  - name: Restart network
+    ansible.builtin.service:
+      name: network
+      state: restarted
+
+  - name: Systemctl daemon reload
+    shell: systemctl daemon-reload
+
+  - name: SSHD Restart
+    ansible.builtin.service:
+      name: sshd
+      state: restarted
+
+  - name: Restart and active keepalived
+    ansible.builtin.service:
+      name: keepalived
+      state: restarted
+      enabled: on
+
+  - name: Reboot
+    ansible.builtin.reboot:

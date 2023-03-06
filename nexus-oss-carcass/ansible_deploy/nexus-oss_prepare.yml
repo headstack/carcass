@@ -1,0 +1,7 @@
+- name: Full prepare Nexus-OSS cluster for work
+  hosts:
+    - nexus-oss
+  roles:
+    - astra_general_config
+    - nexus_container_up
+    - nexus_ha_2_nodes

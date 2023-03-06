@@ -1,0 +1,53 @@
+---
+
+  - name: Systcl apply
+    ansible.builtin.shell: sysctl -p
+
+  - name: Restart network
+    ansible.builtin.service:
+      name: network
+      state: restarted
+
+  - name: Netplan apply
+    ansible.builtin.shell: netplan apply
+
+  - name: SSHD Restart
+    ansible.builtin.service:
+      name: sshd
+      state: restarted
+
+  - name: Restart and active rsync
+    ansible.builtin.service:
+      name: rsync
+      state: restarted
+      enabled: on
+
+  - name: Restart and active keepalived
+    ansible.builtin.service:
+      name: keepalived
+      state: restarted
+      enabled: on
+
+  - name: Restart and active haproxy
+    ansible.builtin.service:
+      name: haproxy
+      state: restarted
+      enabled: on
+
+  - name: Restart and active rsyslogd
+    ansible.builtin.service:
+      name: rsyslogd
+      state: restarted
+      enabled: on
+
+  - name: fresh_path
+    ansible.builtin.shell: /bin/bash /etc/cron.hourly/ballfresher
+
+  - name: start_and_enable_path
+    ansible.builtin.service:
+      name: nexus-oss-watch.path
+      state: started
+      enabled: on
+
+  - name: Reboot
+    ansible.builtin.reboot:

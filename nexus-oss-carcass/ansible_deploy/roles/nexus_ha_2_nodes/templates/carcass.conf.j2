@@ -1,0 +1,81 @@
+#!/bin/bash
+# GENERAL SETTINGS
+# Services which are critical. If it down, sw-over
+CRITICAL_SERVICES=("FileBlobStoresPath" "FileDescriptors" "ThreadDeadlockDetector")
+# Services which are lifecycle. If it down, sw-over. 
+LIFECYCLE_SERVICES=("AvailableCPUs" "BlobStores" "LifecyclePhase")
+# There are all services which nexus have. If down services count equal or less then specified count, sw-over
+FAULT_GENERAL_TOLERANCE="{{ srv.carcass.FAULT_GENERAL_TOLERANCE }}"
+# There are critical services. If down services count equal or less then specified count, sw-over
+FAULT_CRITICAL_TOLERANCE="{{ srv.carcass.FAULT_CRITICAL_TOLERANCE }}"
+# There are lifecycle services. If down services count equal or less then specified count, sw-over
+FAULT_LIFECYCLE_TOLERANCE="{{ srv.carcass.FAULT_LIFECYCLE_TOLERANCE }}"
+DOCKER_COMPOSE_FILE_PATH="/opt/nexus/docker-compose.yml"
+
+# NETWORK CHECK SETTINGS
+# If "DEBUG", then check network when fast check of nexus-oss HTTP status code is success e.g. 200. If "DISABLE", then check work so fast.
+NETWORK_CHECK="DISABLE"
+PING_PACKAGE_COUNT="{{ srv.carcass.PING_PACKAGE_COUNT }}"
+# In seconds
+PING_TIMEOUT="{{ srv.carcass.PING_TIMEOUT }}"
+NODE_1_ADDR="{{ srv.carcass.MASTER_ADDR }}"
+NODE_2_ADDR="{{ srv.carcass.BACKUP_ADDR }}"
+CLUSTER_VIP="{{ srv.carcass.CLUSTER_VIP }}"
+CONFIDANT_ADDR="{{ srv.carcass.CONFIDANT_ADDR }}"
+ALL_NET_CHECK_ADDRS=("$NODE_1_ADDR" "$NODE_2_ADDR" "$CLUSTER_VIP" "$CONFIDANT_ADDR")
+
+# CURL CHECK SETTINGS
+USER_AUTH="{{ srv.carcass.USER_AUTH }}"
+# Addr of nexus-oss repository to check
+CHECK_ADDR="{{ current_node_replication_addr }}:8081"
+# Interface on host when check runs
+LOCAL_INTERFACE="{{ srv.carcass.LOCAL_INTERFACE }}"
+# In seconds
+REQUEST_TIMEOUT="{{ srv.carcass.REQUEST_TIMEOUT }}"
+
+# LOGGER SETTINGS
+LOG_FILE_DATE=$(date +"%m_%d_%y")
+LOG_DIR_DATE=$(date +"%m_%d_%y")
+LOG_MESSAGES_DATE=$(date +"%a %F %T %Z")
+INFO_MESSAGE="$LOG_MESSAGES_DATE [INFO] -"
+NOTICE_MESSAGE="$LOG_MESSAGES_DATE [NOTICE] -"
+WARNING_MESSAGE="$LOG_MESSAGES_DATE [WARNING] -"
+ERROR_MESSAGE="$LOG_MESSAGES_DATE [ERROR] -"
+CRITICAL_MESSAGE="$LOG_MESSAGES_DATE [CRITICAL] -"
+SUCCESS_MESSAGE="$LOG_MESSAGES_DATE [SUCCESS] -"
+LOG_DIR="/var/log/nexus-oss-cluster"
+CURRENT_LOG_DIR="$LOG_DIR/$LOG_DIR_DATE"
+CURRENT_LOG_FILE="$CURRENT_LOG_DIR/nexus-oss-cluster_$LOG_FILE_DATE.log"
+CURRENT_REPLICATION_LOG_FILE="$CURRENT_LOG_DIR/nexus-oss-replication_$LOG_FILE_DATE.log"
+# Only for log
+POD_NAME="{{ srv.carcass.POD_NAME }}"
+
+# BETWEEN CLUSTER REPLICATION SETTINGS
+SSH_USER="nobody"
+SSH_PORT="22"
+SSH_KEY_PATH="/home/nobody/.ssh/cluster_auth"
+AUTH_1_NODE_OPTS="ssh -o ConnectTimeout=1 -p "$SSH_PORT" -i "$SSH_KEY_PATH" "$SSH_USER""
+AUTH_2_NODE_OPTS="ssh -o ConnectTimeout=1 -p "$SSH_PORT" -i "$SSH_KEY_PATH" "$SSH_USER""
+# In MiB
+NODE_SIZE_VARIETY_LIMITER=100
+# In MiB
+SAFETY_NODE_SIZE_VARIETY_LIMITER=1000
+# In minutes
+NODE_MASTER_STATE_UPTIME_MINUTES_LIMITER=10
+# In seconds
+NODE_MASTER_STATE_UPTIME_SECONDS_LIMITER=25
+# If end of path - directory, and you want to copy files in last directory in this path, then you must set slash.
+# Else rsync copy this directory to path target.
+NEXUS_OSS_STORE_PATH="/var/lib/docker/volumes/nexus-data/_data/"
+REPLICATION_CHECK_FILE_NAME=".replication_check_file"
+REPLICATION_CHECK_FILE_PATH="$LOG_DIR/$REPLICATION_CHECK_FILENAME"
+CURRENT_REPLICATION_MASTER_CHECK_FILE="$CURRENT_LOG_DIR/master_disk_size_check_$LOG_FILE_DATE.txt"
+CURRENT_REPLICATION_BACKUP_CHECK_FILE="$CURRENT_LOG_DIR/backup_disk_size_check_$LOG_FILE_DATE.txt"
+CHECK_FILE_PATH="$CURRENT_LOG_DIR/ha_test_$LOG_FILE_DATE.txt"
+TIME_FIXATION_FILE_NAME=".master_activity_time_info"
+TIME_FIXATION_FILE_PATH="$LOG_DIR/$TIME_FIXATION_FILE_NAME"
+BAD_STATE_FILE_NAME=".emergency_state"
+BAD_STATE_FILE_PATH="$LOG_DIR/$BAD_STATE_FILE_NAME"
+MASTER_RUN_SAFETY_TIME=4
+# In seconds
+RSYNC_TIMEOUT=15

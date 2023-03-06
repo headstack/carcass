@@ -1,0 +1,26 @@
+# /etc/rsyncd: configuration file for rsync daemon mode
+
+# See rsyncd.conf man page for more options.
+
+# Main configuration for rsyncd
+use chroot = yes
+max connections = 10
+pid file = /var/run/rsyncd.pid
+lock file = /var/run/rsync.lock
+log file = /var/log/rsync.log
+exclude = lost+found/
+timeout = 300
+ignore nonreadable = yes
+dont compress   = *.gz *.tgz *.zip *.z *.Z *.rpm *.deb *.bz2
+
+# Nexus-oss resource configuration for rsyncd
+[nexus-oss]
+    path = /var/lib/docker/volumes/nexus-data/_data
+    read only = false
+    uid = root
+    gid = root
+    comment = Nexus repository data folders
+    auth users = nobody
+    secrets file = /etc/rsyncd.scrt
+    hosts allow = localhost {{ srv.carcass.MASTER_ADDR }} {{ srv.carcass.BACKUP_ADDR }}
+    hosts deny = *

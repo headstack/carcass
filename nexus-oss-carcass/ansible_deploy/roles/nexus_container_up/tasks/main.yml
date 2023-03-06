@@ -1,0 +1,100 @@
+---
+
+  - name: nexus_container_up | Apt-get update cache
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      update_cache: yes
+      force_apt_get: yes
+      autoremove: yes
+    ignore_errors: true
+    tags:
+       - docker_packages
+       - apt_docker
+       - nexus
+
+  - name: nexus_container_up | Apt install deps
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      force_apt_get: yes
+      state: fixed
+      name: "{{ item }}"
+    loop: "{{ docker_deps }}"
+    ignore_errors: true
+    tags:
+      - docker_packages
+      - apt_docker
+      - nexus
+
+  - name: nexus_container_up | Extract docker libs to the nexus nodes
+    ansible.builtin.unarchive:
+      src: files/pip-prereq.tar.gz
+      dest: /root/
+    tags:
+      - docker_packages
+      - nexus
+
+  - name: nexus_container_up | Move docker-compose to the nexus nodes
+    ansible.builtin.copy:
+      src: files/docker-compose
+      dest: /usr/local/bin/
+      owner: root
+      group: root
+      mode: u=rwx,g=rx,o=rx
+    tags:
+      - docker_packages
+      - nexus
+
+  - name: nexus_container_up | Starting docker
+    ansible.builtin.service:
+      name: docker
+      state: started
+    tags:
+      - nexus
+
+  - name: nexus_container_up | Install docker-py libs using pip
+    shell: |
+      cd /root/pip-prereq
+      pip3 install docker/*
+    tags:
+      - docker_packages
+      - nexus
+
+  - name: nexus_container_up | Move nexus sources container to /root/containerized_services/nexus 
+    ansible.builtin.copy:
+      src: files/nexus3-new-3.38.0.tar
+      dest: /opt/nexus/
+      force: yes
+    tags:
+      - image_load
+      - nexus
+    register: nexus_container_mv_src
+      
+  - name: nexus_container_up | Load local nexus docker image to the docker
+    community.docker.docker_image:
+      source: load
+      load_path: /opt/nexus/nexus3-new-3.38.0.tar
+      name: sonatype/nexus3
+      state: present
+    tags:
+      - nexus
+      - image_load
+
+  - name: nexus_container_up | Templating docker-compose file
+    ansible.builtin.template:
+      src: templates/docker-compose.yml.j2
+      dest: /opt/nexus/docker-compose.yml
+      force: yes
+    tags:
+      - nexus
+      - compose_config
+
+  - name: nexus_container_up | Starting nexus
+    ansible.builtin.shell: | 
+      docker-compose --project-directory /opt/nexus/ up -d
+      sleep 2
+      chown -R 200:200 /var/lib/docker/volumes/nexus-data
+      docker-compose --project-directory /opt/nexus/ down
+      docker-compose --project-directory /opt/nexus/ up -d
+    tags:
+      - nexus
+#    when: nexus_container_mv_src.changed

@@ -1,0 +1,28 @@
+config_directories:
+  - { path: '/etc/carcass', state: 'directory', mode: '644', owner: 'astra', group: 'astra' }
+  - { path: '/etc/systemd/system/watchers', state: 'directory', mode: '644', owner: 'root', group: 'root' }
+
+# Users to be added
+tech_users_info:
+  - { user: 'nobody', group: sudo, home: '/home/nobody/', comment: 'core_services_main_key@example.com', pubkey: 'ssh-rsa' }
+
+carcass_templates:
+  - { src: 'templates/carcass.conf.j2', dst: '/etc/carcass/carcass.conf', mode: '644', owner: 'astra', group: 'astra' }
+
+rsync_templates:
+  - { src: 'templates/rsyncd.conf.j2', dst: '/etc/rsyncd.conf', mode: '600', owner: 'root', group: 'root' }
+  - { src: 'templates/rsyncd.scrt.j2', dst: '/etc/rsyncd.scrt', mode: '600', owner: 'root', group: 'root' }
+  - { src: 'templates/rsync_cli_p.scrt.j2', dst: '/etc/rsync_cli_p.scrt', mode: '600', owner: 'root', group: 'root' }
+  - { src: 'templates/config.j2', dst: '/home/nobody/.ssh/config', mode: '644', owner: 'root', group: 'root' }
+  - { src: 'templates/hosts.j2', dst: '/etc/hosts', mode: '644', owner: 'root', group: 'root' }
+
+systemd_files:
+  - { src: 'files/nexus-oss-watch.path', dst: '/etc/systemd/system/'}
+  - { src: 'files/nexus-oss-watch.service', dst: '/etc/systemd/system/'}
+
+apt_keepalived_deps:
+  - keepalived
+  - ipset
+  - libipset-dev
+  - libipset3
+  - curl

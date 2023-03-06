@@ -1,0 +1,39 @@
+
+network:
+    version: 2
+    ethernets:
+        {{ eth0.name }}:
+            dhcp4: false
+            dhcp6: false
+            addresses: [ {{ eth0.ip }} ]
+#            gateway4: {{ eth0.gw }}
+#            nameservers:
+#                addresses: [ dnsaddr ]
+#                search: [ srv.local ]
+            match:
+                macaddress: {{ ansible_facts['eth0']['macaddress'] }}
+            mtu: {{ eth0.mtu }}
+            routes:
+#              - to: {{ eth0.route_to_1}}
+#                via: {{ eth0.route_via_1 }}
+#                on-link: true
+              - to: {{ eth0.route_to_2 }}
+                via: {{ eth0.route_via_2 }}
+                on-link: true
+            set-name: {{ eth0.name }}
+        {{ eth1.name }}:
+            dhcp4: false
+            dhcp6: false
+            addresses: [ {{ eth1.ip }} ]
+            gateway4: {{ eth1.gw }}
+#            nameservers:
+#                addresses: [ dnsaddr ]
+#                search: [ srv.local ]
+            match:
+                macaddress: {{ ansible_facts['eth1']['macaddress'] }}
+            mtu: {{ eth1.mtu }}
+#            routes:
+#              - to: {{ eth1.route_to_1 }}
+#                via: {{ eth1.route_via_1 }}
+#                on-link: true
+            set-name: {{ eth1.name }}

@@ -1,0 +1,50 @@
+#!/bin/bash
+# GENERAL SETTINGS
+# Services which are critical. If it down, sw-over
+CRITICAL_SERVICES=("FileBlobStoresPath" "FileDescriptors" "ThreadDeadlockDetector")
+# Services which are lifecycle. If it down, sw-over. 
+LIFECYCLE_SERVICES=("AvailableCPUs" "BlobStores" "LifecyclePhase")
+# There are all services which nexus have. If down services count equal or less then specified count, sw-over
+FAULT_GENERAL_TOLERANCE="8"
+# There are critical services. If down services count equal or less then specified count, sw-over
+FAULT_CRITICAL_TOLERANCE="1"
+# There are lifecycle services. If down services count equal or less then specified count, sw-over
+FAULT_LIFECYCLE_TOLERANCE="2"
+
+# NETWORK CHECK SETTINGS
+# If "DEBUG", then check network when fast check of nexus-oss HTTP status code is success e.g. 200. If "DISABLE", then check work so fast.
+NETWORK_CHECK="DISABLE"
+PING_PACKAGE_COUNT="1"
+# In seconds
+PING_TIMEOUT="3"
+NODE_1_ADDR="1.1.1.87"
+NODE_2_ADDR="1.1.1.5"
+CLUSTER_VIP="1.1.1.10"
+CONFIDANT_ADDR="1.1.1.176"
+ALL_NET_CHECK_ADDRS=("$NODE_1_ADDR" "$NODE_2_ADDR" "$CLUSTER_VIP" "$CONFIDANT_ADDR")
+
+# CURL CHECK SETTINGS
+USER_AUTH="barabashka:YOUR_STRONG_PASSWORD"
+# Addr of nexus-oss repository to check
+CHECK_ADDR="$CLUSTER_VIP:8081"
+# Interface on host when check runs
+LOCAL_INTERFACE="eth0"
+# In seconds
+REQUEST_TIMEOUT="3"
+
+# LOGGER SETTINGS
+LOG_FILE_DATE=$(date +"%m_%d_%y")
+LOG_DIR_DATE=$(date +"%m_%d_%y")
+LOG_MESSAGES_DATE=$(date +"%a %F %T %Z")
+INFO_MESSAGE="$LOG_MESSAGES_DATE [INFO] -"
+NOTICE_MESSAGE="$LOG_MESSAGES_DATE [NOTICE] -"
+WARNING_MESSAGE="$LOG_MESSAGES_DATE [WARNING] -"
+ERROR_MESSAGE="$LOG_MESSAGES_DATE [ERROR] -"
+CRITICAL_MESSAGE="$LOG_MESSAGES_DATE [CRITICAL] -"
+SUCCESS_MESSAGE="$LOG_MESSAGES_DATE [SUCCESS] -"
+LOG_DIR="/var/log/nexus-oss-cluster"
+CURRENT_LOG_DIR="$LOG_DIR/$LOG_DIR_DATE"
+CURRENT_LOG_FILE="$CURRENT_LOG_DIR/nexus-oss-cluster_$LOG_FILE_DATE.log"
+CHECK_FILE_PATH="$CURRENT_LOG_DIR/ha_test_$LOG_FILE_DATE.txt"
+# Only for log
+POD_NAME="YOUR_NAME"

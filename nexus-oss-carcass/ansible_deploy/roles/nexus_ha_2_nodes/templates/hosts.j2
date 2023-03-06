@@ -1,0 +1,14 @@
+# The following lines are desirable for IPv4 capable hosts
+127.0.0.1	localhost
+127.0.1.1	astra-test
+127.0.1.1	nexus
+{{ srv.carcass.MASTER_ADDR }}  {{ srv.hosts.MASTER_HOSTNAMES }}
+{{ srv.carcass.BACKUP_ADDR }}  {{ srv.hosts.BACKUP_HOSTNAMES }}
+{{ srv.carcass.CLUSTER_VIP }}  {{ srv.hosts.VIP_HOSTNAMES }}
+{{ srv.carcass.CONFIDANT_ADDR }}  {{ srv.hosts.CONFIDIANT_HOSTNAMES }}
+
+# The following lines are desirable for IPv6 capable hosts
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+

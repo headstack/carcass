@@ -1,0 +1,261 @@
+#!/bin/bash
+
+# PREREQUISITS CHECK
+if [[ ! -d "/etc/carcass/" ]]; then
+  echo -e "Config directory /etc/carcass/ does not exist for carcass cluster controller!"
+  exit 1
+elif [[ ! -f "/etc/carcass/carcass.conf" ]]; then
+  echo -e "Config for carcass cluster controller does not exist in path /etc/carcass/!"
+  exit 1
+else
+source /etc/carcass/carcass.conf
+fi
+
+if [[ ! -d "$LOG_DIR" ]]; then
+  mkdir -p "$LOG_DIR"
+elif [[ ! -d "$CURRENT_LOG_DIR" ]]; then
+  mkdir -p "$CURRENT_LOG_DIR"
+elif [[ ! -f "$CURRENT_LOG_FILE" ]]; then
+  echo -e "$INFO_MESSAGE New log file has been created" >> "$CURRENT_LOG_FILE"
+elif [[ ! -f "$CHECK_FILE_PATH" ]]; then
+  touch "$CHECK_FILE_PATH" 
+  echo -e "$INFO_MESSAGE New ha check txt file has been created in $CHECK_FILE_PATH" >> "$CURRENT_LOG_FILE"
+elif [[ ! -z "$POD_NAME" ]]; then 
+  echo -e "\n$INFO_MESSAGE  Start check tasks. Name of POD is - $POD_NAME" >> "$CURRENT_LOG_FILE"
+elif [[ "$(systemctl status docker | grep running | awk '{print $3}')" != "(running)" ]]; then
+  echo -e "$ERROR_MESSAGE Your docker-ce is not running! Exit with code 1!" >> "$CURRENT_LOG_FILE"
+  exit 1
+elif [[ "$(systemctl status rsync | grep running | awk '{print $3}')" != "(running)" ]]; then
+  echo -e "$ERROR_MESSAGE Your rsync server is not running! Exit with code 1!" >> "$CURRENT_LOG_FILE"
+  exit 1
+fi
+
+# Variables of the logical state
+unset MASTER_CHECK BACKUP_CHECK DO_I_HAVE_A_VIP 
+MASTER_CHECK=$(grep "state MASTER" /etc/keepalived/keepalived.conf | awk '{ print $2 }')
+BACKUP_CHECK=$(grep "state BACKUP" /etc/keepalived/keepalived.conf | awk '{ print $2 }')
+DO_I_HAVE_A_VIP=$(ip a | grep secondary | awk '{print $2}' | sed "s|\/.*||g")
+RSYNC_STATUS=$(ps aux | grep rsync | grep -v "daemon\|grep rsync\|pts")
+
+# MASTER/BACKUP ROLE CHECK
+if [[ "$MASTER_CHECK" = "MASTER" ]]; then
+  echo -e "$INFO_MESSAGE This node is the MASTER by configuration file" >> "$CURRENT_LOG_FILE"
+  CURRENT_NODE_ADDR=$NODE_1_ADDR
+  OTHER_NODE_ADDR=$NODE_2_ADDR
+  CURRENT_NODE_SSH_OPTS=$AUTH_1_NODE_OPTS
+  OTHER_NODE_SSH_OPTS=$AUTH_2_NODE_OPTS
+elif [[ "$BACKUP_CHECK" = "BACKUP" ]]; then
+  echo -e "$INFO_MESSAGE This node is the BACKUP by configuration file" >> "$CURRENT_LOG_FILE"; fi
+  CURRENT_NODE_ADDR=$NODE_2_ADDR
+  OTHER_NODE_ADDR=$NODE_1_ADDR
+  CURRENT_NODE_SSH_OPTS=$AUTH_2_NODE_OPTS
+  OTHER_NODE_SSH_OPTS=$AUTH_1_NODE_OPTS
+if ! [[ -z "$DO_I_HAVE_A_VIP" ]]; then
+  echo -e "$INFO_MESSAGE Seems what i'm ACTIVE MASTER node with VIP - $DO_I_HAVE_A_VIP" >> "$CURRENT_LOG_FILE" && ((VIP_CHECK_COUNT++))
+else
+  echo -e "$INFO_MESSAGE Seems what i'm BACKUP NODE" >> "$CURRENT_LOG_FILE" && ((VIP_CHECK_COUNT--))   
+fi
+
+rsync_killer ()
+{
+  if ! [[ -z "$DO_I_HAVE_A_VIP" ]] && ! [[ -z "$RSYNC_STATUS" ]]; then
+    echo -e "$INFO_MESSAGE Killing rsync syncronization process" >> "$CURRENT_LOG_FILE"
+    kill -9 $(ps aux | grep rsync | grep -v "daemon\|grep rsync\|pts" | awk '{print $2}')
+    echo -e "$SUCCESS_MESSAGE Rsync syncronization process has been killed" >> "$CURRENT_LOG_FILE"
+  fi
+}
+
+tag_manager ()
+{
+  if [[ -z "$DO_I_HAVE_A_VIP" ]] && [[ -f "$REPLICATION_CHECK_FILE_PATH" ]]; then
+    echo -e "$NOTICE_MESSAGE Seems the master run replication process. File $REPLICATION_CHECK_FILE_PATH exist." >> "$CURRENT_LOG_FILE"
+    echo -e "$NOTICE_MESSAGE Let's check the master node availabillity." >> "$CURRENT_LOG_FILE"
+    if [[ -z $($OTHER_NODE_SSH_OPTS@$OTHER_NODE_ADDR sudo ls /) ]]; then
+      echo -e "$ERROR_MESSAGE Master node's network is not available - SSH CHECK false" >> "$CURRENT_LOG_FILE"
+      echo -e "$NOTICE_MESSAGE Let's ping confidiant server" >> "$CURRENT_LOG_FILE"
+        if [[ $(ping -c "$PING_PACKAGE_COUNT" -W "$PING_TIMEOUT" -q "$CONFIDANT_ADDR" | grep received | awk '{print $4,$5}' | sed 's|,||') = "0 received" ]]; then
+          echo -e "$CRITICAL_MESSAGE Confidiant server $CONFIDANT_ADDR is not available. Looks like a splitbrain. I'm alone! Stopping my nexus-oss container! Exit 1!" >> "$CURRENT_LOG_FILE"
+          docker-compose -f "$DOCKER_COMPOSE_FILE_PATH" down 
+          echo -e "$CRITICAL_MESSAGE Removing replication tag file" >> "$CURRENT_LOG_FILE"
+          rm -f "$REPLICATION_CHECK_FILE_PATH"
+          echo -e "$CRITICAL_MESSAGE Removing replication tag file success" >> "$CURRENT_LOG_FILE"
+          echo -e "$CRITICAL_MESSAGE Cluster state - CRITICAL" >> "$CURRENT_LOG_FILE"
+          exit 1
+        else
+          echo -e "$NOTICE_MESSAGE Confidiant server $CONFIDANT_ADDR is available! Looks like master node goes down." >> "$CURRENT_LOG_FILE"          
+          echo -e "$INFO_MESSAGE Removing replication tag file" >> "$CURRENT_LOG_FILE"
+          rm -f "$REPLICATION_CHECK_FILE_PATH"
+          echo -e "$SUCCESS_MESSAGE Removing replication tag file success" >> "$CURRENT_LOG_FILE"
+          echo -e "$INFO_MESSAGE Up my nexus container starting" >> "$CURRENT_LOG_FILE"
+          docker-compose -f "$DOCKER_COMPOSE_FILE_PATH" up -d
+          echo -e "$SUCCESS_MESSAGE Up my nexus container was end!" >> "$CURRENT_LOG_FILE"
+        fi
+    else
+      echo -e "$SUCCESS_MESSAGE Check of master node network availabillity done - available!" >> "$CURRENT_LOG_FILE"  
+      echo -e "$NOTICE_MESSAGE All other checks skipped in time before replication has not completed or before master no going down or master done this work and remove this file." >> "$CURRENT_LOG_FILE"  
+    fi
+  elif ! [[ -z "$DO_I_HAVE_A_VIP" ]] && [[ -f "$REPLICATION_CHECK_FILE_PATH" ]]; then
+    echo -e "$NOTICE_MESSAGE Seems the cluster replication is not complete sometime back. $REPLICATION_CHECK_FILE_PATH exist." >> "$CURRENT_LOG_FILE"
+    echo -e "$NOTICE_MESSAGE Removing the replication tag file. File $REPLICATION_CHECK_FILE_PATH erased." >> "$CURRENT_LOG_FILE"
+    rm -f "$REPLICATION_CHECK_FILE_PATH"
+    echo -e "$SUCCESS_MESSAGE Removing replication tag file success" >> "$CURRENT_LOG_FILE" 
+  fi
+}
+
+emergency_cleaner ()
+{
+  if [[ -f "$BAD_STATE_FILE_PATH" ]]; then
+    echo -e "$INFO_MESSAGE Removing emergency file in path $BAD_STATE_FILE_PATH" >> "$CURRENT_LOG_FILE"
+    rm -f "$BAD_STATE_FILE_PATH"  
+  fi
+}
+
+tag_manager
+
+# LOGICAL MASTER SERVER ACTIVE TIME COUNTER
+if ! [[ -z "$DO_I_HAVE_A_VIP" ]]; then
+  echo -e "$INFO_MESSAGE Starting fixation of master server activity time" >> "$CURRENT_LOG_FILE"
+  INITIAL_TIME=$(grep '^interval' /etc/keepalived/keepalived.conf | awk '{print $2}')
+  if [[ ! -f "$TIME_FIXATION_FILE_PATH" ]]; then
+    touch "$TIME_FIXATION_FILE_PATH"
+    echo -e "Master activity time: 0 day(s), 0 hour(s), 0 minute(s), $INITIAL_TIME second(s) since $(date +"%F %T %Z")" > "$TIME_FIXATION_FILE_PATH"
+    echo -e "$INFO_MESSAGE New time fixation check txt file has been created in $TIME_FIXATION_FILE_PATH and initial time - $INITIAL_TIME seconds" >> "$CURRENT_LOG_FILE"
+  fi
+  unset VARIETY SECONDS_RESULT MINUTES_RESULT HOURS_RESULT DAYS_RESULT
+  echo -e "$INFO_MESSAGE Prepare new count of master activity time" >> "$CURRENT_LOG_FILE"
+  VARIETY=$(grep "second" "$TIME_FIXATION_FILE_PATH" | awk '{print $10}')
+  SECONDS_RESULT=$(echo "$VARIETY+$INITIAL_TIME" | bc)
+  MINUTES_RESULT=$(echo "$SECONDS_RESULT/60" | bc)  
+  HOURS_RESULT=$(echo "$SECONDS_RESULT/3600" | bc)
+  DAYS_RESULT=$(echo "$SECONDS_RESULT/86400" | bc)
+  echo -e "$INFO_MESSAGE New count of master activity time: $DAYS_RESULT day(s)" >> "$CURRENT_LOG_FILE"
+  echo -e "$INFO_MESSAGE Write new count of master activity time to $TIME_FIXATION_FILE_PATH" >> "$CURRENT_LOG_FILE"
+  sed -i "s/[0-9]\+\s\(day(s)\)/$DAYS_RESULT \1/; s/[0-9]\+\s\(hour(s)\)/$HOURS_RESULT \1/; s/[0-9]\+\s\(minute(s)\)/$MINUTES_RESULT \1/; s/[0-9]\+\s\(second(s)\)/$SECONDS_RESULT \1/" "$TIME_FIXATION_FILE_PATH" 
+fi
+
+# CHECK EXECUTION
+# Fast check HTTP status code of nexus-oss response. If nexus do not answer, then check network
+echo -e "$NOTICE_MESSAGE Start fast check of nexus HTTP status code" >> "$CURRENT_LOG_FILE"
+
+echo > "$CHECK_FILE_PATH"
+
+curl --connect-timeout $REQUEST_TIMEOUT --interface $LOCAL_INTERFACE -I -X "GET" -u "$USER_AUTH" \
+ "http://$CHECK_ADDR/service/rest/v1/status/check" -H "accept: application/json" -o "$CHECK_FILE_PATH" &>>"$CURRENT_LOG_FILE"
+
+echo -e "$INFO_MESSAGE Generate fast check of nexus HTTP status code result" >> "$CURRENT_LOG_FILE"
+
+FAST_CHECK_RESULT=$(grep "HTTP/1.1" "$CHECK_FILE_PATH" | awk '{print $2}')
+
+echo -e "$INFO_MESSAGE Check result of nexus HTTP status code" >> "$CURRENT_LOG_FILE"
+
+if [[ "$FAST_CHECK_RESULT" != "200" ]]; then
+  echo -e "$ERROR_MESSAGE Fast check HTTP status code of nexus-oss response: $FAST_CHECK_RESULT. Starting creation of emergency file in path $BAD_STATE_FILE_PATH" >> "$CURRENT_LOG_FILE"
+  touch "$BAD_STATE_FILE_PATH"
+  echo -e "$ERROR_MESSAGE Kill rsync and exit with code 1!" >> "$CURRENT_LOG_FILE"
+  rsync_killer
+  exit 1
+else
+  echo -e "$SUCCESS_MESSAGE Fast check HTTP status code of nexus-oss response: $FAST_CHECK_RESULT" >> "$CURRENT_LOG_FILE" 
+  emergency_cleaner
+fi
+
+# FULL CHECK 
+echo -e "$NOTICE_MESSAGE Start full check of nexus server components status" >> "$CURRENT_LOG_FILE"
+
+echo > "$CHECK_FILE_PATH" 
+
+curl --connect-timeout $REQUEST_TIMEOUT --interface $LOCAL_INTERFACE -X "GET" -u "$USER_AUTH" \
+ "http://$CHECK_ADDR/service/rest/v1/status/check" -H "accept: application/json" -o "$CHECK_FILE_PATH" &>>"$CURRENT_LOG_FILE"
+
+CHECK_EXIT_CODE=$?
+
+if ! [[ $CHECK_EXIT_CODE -eq 0 ]]; then
+  echo -e "$ERROR_MESSAGE Full check of nexus server components status failed. Curl failed. Starting creation of emergency file in path $BAD_STATE_FILE_PATH" >> "$CURRENT_LOG_FILE"
+  touch "$BAD_STATE_FILE_PATH"
+  echo -e "$ERROR_MESSAGE Killing rsync and exit with code 1!" >> "$CURRENT_LOG_FILE"
+  rsync_killer
+  exit 1
+else
+  echo -e "$SUCCESS_MESSAGE Full check of nexus server components success. Exit code of this checking pid - $CHECK_EXIT_CODE" >> "$CURRENT_LOG_FILE"
+  emergency_cleaner
+fi
+
+echo -e "$NOTICE_MESSAGE Mapping array of nexus services" >> "$CURRENT_LOG_FILE"
+
+unset FULL_CHECK_LIST SERVICES_GENERAL_COUNT SERVICES_CRITICAL_COUNT SERVICES_LIFECYCLE_COUNT 
+
+mapfile -t FULL_CHECK_LIST < <(grep "\" : {" "$CHECK_FILE_PATH" | sed "s|\s: {||")
+SERVICES_GENERAL_COUNT=${#FULL_CHECK_LIST[*]}
+SERVICES_CRITICAL_COUNT=${#CRITICAL_SERVICES[*]}
+SERVICES_LIFECYCLE_COUNT=${#LIFECYCLE_SERVICES[*]}
+
+echo -e "$INFO_MESSAGE Count of all nexus services is - $SERVICES_GENERAL_COUNT. From this $SERVICES_CRITICAL_COUNT - critical services and $SERVICES_LIFECYCLE_COUNT - lifecycle services" >> "$CURRENT_LOG_FILE"
+
+echo -e "$NOTICE_MESSAGE Start full health check cycle" >> "$CURRENT_LOG_FILE"
+
+for service in "${FULL_CHECK_LIST[@]}"; do
+  FULL_CHECK_RESULT=$(grep -A 1 "$service" "$CHECK_FILE_PATH" | grep "true" | sed "s|,||; s|\"||g; s|\s||g;")
+  if [[ "$FULL_CHECK_RESULT" = "healthy:true" ]]; then ((GENERAL_SERVICES_HEALTH++))
+  else 
+    echo -e "$WARNING_MESSAGE Service module of nexus-oss named by $FULL_CHECK_RESULT is down" >> "$CURRENT_LOG_FILE"
+    for critical_service in "${CRITICAL_SERVICES[@]}"; do
+      if [[ "$service" = "$critical_service" ]]; then ((CRITICAL_SERVICES_HEALTH++))
+          echo -e "$WARNING_MESSAGE Service module of nexus-oss named by $critical_service is down" >> "$CURRENT_LOG_FILE"
+          break
+      fi
+    done
+    for lifecycle_service in "${LIFECYCLE_SERVICES[@]}"; do
+      if [[ "$service" = "$lifecycle_service" ]]; then ((LIFECYCLE_SERVICES_HEALTH++)) 
+        echo -e "$CRITICAL_MESSAGE Service module of nexus-oss named by $lifecycle_service is down" >> "$CURRENT_LOG_FILE"
+        break
+      fi
+    done
+  fi 
+done
+
+# DECISION MAKING ON GENERAL SERVICES
+if ! [[ -z "$GENERAL_SERVICES_HEALTH" ]]; then
+    if [[ "$GENERAL_SERVICES_HEALTH" -le "$FAULT_GENERAL_TOLERANCE" ]]; then
+      echo -e "$CRITICAL_MESSAGE Working general services count is: $GENERAL_SERVICES_HEALTH/$SERVICES_GENERAL_COUNT" >> "$CURRENT_LOG_FILE"
+    else
+      echo -e "$SUCCESS_MESSAGE Working general services count is: $GENERAL_SERVICES_HEALTH/$SERVICES_GENERAL_COUNT" >> "$CURRENT_LOG_FILE"
+    fi
+else
+  GENERAL_SERVICES_HEALTH="$SERVICES_GENERAL_COUNT"
+  echo -e "$CRITICAL_MESSAGE Working general services count is: $GENERAL_SERVICES_HEALTH/$SERVICES_GENERAL_COUNT". Exit with code 1! >> "$CURRENT_LOG_FILE"
+  touch "$BAD_STATE_FILE_PATH"
+  rsync_killer
+  exit 1
+fi
+
+# DECISION MAKING ON CRITICAL SERVICES
+if ! [[ -z "$CRITICAL_SERVICES_HEALTH" ]]; then
+    if [[ "$CRITICAL_SERVICES_HEALTH" -le "$FAULT_CRITICAL_TOLERANCE" ]]; then
+      echo -e "$CRITICAL_MESSAGE Down critical services count is: $CRITICAL_SERVICES_HEALTH/$SERVICES_CRITICAL_COUNT" >> "$CURRENT_LOG_FILE"
+      echo -e "$CRITICAL_MESSAGE Switch over on BACKUP NODE. Exit with code 1." >> "$CURRENT_LOG_FILE"
+      touch "$BAD_STATE_FILE_PATH"
+      rsync_killer
+      exit 1
+    else
+      echo -e "$WARNING_MESSAGE Down critical services count is: $CRITICAL_SERVICES_HEALTH/$SERVICES_CRITICAL_COUNT" >> "$CURRENT_LOG_FILE"
+      emergency_cleaner
+    fi
+elif [[ -z "$CRITICAL_SERVICES_HEALTH" ]]; then echo -e "$SUCCESS_MESSAGE Working critical services count is: $SERVICES_CRITICAL_COUNT/$SERVICES_CRITICAL_COUNT" >> "$CURRENT_LOG_FILE" 
+      emergency_cleaner
+fi
+
+# DECISION MAKING ON LIFECYCLE SERVICES
+if ! [[ -z "$LIFECYCLE_SERVICES_HEALTH" ]]; then
+    if [[ "$LIFECYCLE_SERVICES_HEALTH" -le "$FAULT_LIFECYCLE_TOLERANCE" ]]; then
+      echo -e "$CRITICAL_MESSAGE Down lifecycle services count is: $LIFECYCLE_SERVICES_HEALTH/$SERVICES_LIFECYCLE_COUNT" >> "$CURRENT_LOG_FILE"
+      echo -e "$CRITICAL_MESSAGE Switch over on BACKUP NODE. Exit with code 1." >> "$CURRENT_LOG_FILE"
+      touch "$BAD_STATE_FILE_PATH"
+      rsync_killer
+      exit 1
+    else
+      echo -e "$WARNING_MESSAGE Down lifecycle services count is: $LIFECYCLE_SERVICES_HEALTH/$SERVICES_LIFECYCLE_COUNT" >> "$CURRENT_LOG_FILE"
+      emergency_cleaner
+    fi
+elif [[ -z "$LIFECYCLE_SERVICES_HEALTH" ]]; then echo -e "$SUCCESS_MESSAGE Working lifecycle services count is: $SERVICES_LIFECYCLE_COUNT/$SERVICES_LIFECYCLE_COUNT" >> "$CURRENT_LOG_FILE" 
+      emergency_cleaner
+fi

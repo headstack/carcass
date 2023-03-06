@@ -1,0 +1,236 @@
+---
+    
+  - name: astra_general_config | Set integrity level 63 for all users
+    ansible.builtin.command: pdpl-user -i 63 "{{ item }}"
+    loop: "{{ pdp_id_level }}"
+    ignore_errors: true
+    tags:
+      - system
+      - users
+      - integrity
+
+  - name: astra_general_config | Reboot
+    ansible.builtin.reboot:
+    tags:
+      - system
+      - users
+      - integrity   
+
+  - name: astra_general_config | Resize boot partition physical
+    community.general.parted:
+      device: "{{ item.dev }}"
+      number: "{{ item.num }}"
+      part_end: "{{ item.end }}"
+      resize: yes
+      state: present
+      part_type: "{{ item.type }}"
+    tags: diskwork
+    loop: "{{ resize_part }}"
+
+  - name: astra_general_config | Create a new primary partition for LVM
+    community.general.parted:
+      device: /dev/vdb
+      number: 1
+      flags: [ lvm ]
+      state: present
+      label: gpt
+      part_end: "100%"
+    tags: diskwork
+
+  - name: astra_general_config | PV work
+    community.general.lvg:
+      vg: "{{ item.vg }}"
+      pvs: "{{ item.pv }}" 
+      pvresize: "{{ item.resize }}"
+      state: present
+    loop: "{{ pv_part }}"
+    tags: diskwork
+    ignore_errors: true
+
+  - name: astra_general_config | Resize the logical volume to 80% of VG
+    community.general.lvol:
+      vg: astra-test-vg
+      lv: root
+      size: 80%VG
+      resizefs: yes
+      state: present
+    tags: diskwork
+
+  - name: astra_general_config | Delete old repo file
+    ansible.builtin.file:
+      path: /etc/apt/sources.list.d/srv-astra.list
+      state: absent
+    tags:
+      - system
+
+  - name: astra_general_config | Permit sudo users group use sudo privileges without password
+    ansible.builtin.replace:
+      path: /etc/sudoers
+      regexp: '^\%sudo	ALL\=\(ALL\:ALL\) ALL'
+      replace: '%sudo	ALL=(ALL:ALL) NOPASSWD: ALL'
+    tags: 
+      - system
+      - sudo
+
+  - name: astra_general_config | Flush handlers
+    meta: flush_handlers
+    tags: system
+
+  - name: astra_general_config | Configure StrictHostKeyChecking=no option in ssh_config
+    ansible.builtin.replace:
+      path: /etc/ssh/ssh_config
+      regexp: '(^#   StrictHostKeyChecking ask)'
+      replace: '    StrictHostKeyChecking no'
+    notify: SSHD Restart
+    tags: 
+      - system
+      - ssh_stricthostkeys
+
+  - name: astra_general_config | Flush handlers
+    meta: flush_handlers
+    tags:
+      - system
+      - users
+
+  - name: astra_general_config | SSHD root login permit
+    ansible.builtin.replace:
+      path: /etc/ssh/sshd_config
+      regexp: '^#PermitRootLogin.*'
+      replace: PermitRootLogin yes
+    notify: SSHD Restart
+    tags: 
+      - system
+      - users
+
+  - name: astra_general_config | Create root .ssh/ directory
+    ansible.builtin.file:
+      path: /root/.ssh
+      state: directory
+      mode: '0755'
+      owner: root
+      group: root
+    tags: 
+      - system
+      - users
+
+  - name: astra_general_config | Copy authorized_keys file in .ssh/ for root user
+    ansible.builtin.copy:
+      src: files/authorized_keys
+      dest: /root/.ssh/authorized_keys
+      owner: root
+      group: root
+      mode: '0755'
+    tags: 
+      - system
+      - users
+
+  - name: astra_general_config | Create wheel sudo users
+    ansible.builtin.user:
+      name: "{{ item.user }}"
+      group: "{{ item.group }}"
+      create_home: yes
+      state: present
+    loop: "{{ users_info }}"
+    tags: 
+      - system
+      - users
+        
+  - name: astra_general_config | Add public keys to authorized_keys for users
+    ansible.builtin.authorized_key:
+      user: "{{ item.user }}"
+      state: present
+      manage_dir: yes
+      key: "{{ item.pubkey }}"
+      comment: "{{ item.comment }}"
+    loop: "{{ users_info }}"
+    tags: 
+      - system
+      - users
+
+  - name: astra_general_config | Set integrity level 63 for all users
+    ansible.builtin.command: pdpl-user -i 63 "{{ item }}"
+    loop: "{{ pdp_id_level }}"
+    ignore_errors: true
+    tags:
+      - system
+      - users
+      - integrity
+
+  - name: astra_general_config | Configure sources list in apt
+    ansible.builtin.template:
+      src: templates/sources.list.j2
+      dest: /etc/apt/sources.list
+      owner: root
+      group: root
+      mode: u=rw,g=r,o=r
+    tags:
+      - system
+      - repo
+   
+  - name: astra_general_config | Send for nexus nodes astra-pub-nexus-key for astra repo
+    ansible.builtin.copy:
+      src: "{{ item }}"
+      dest: /root/
+      owner: root
+      group: root
+      mode: '0755'
+    loop: "{{ apt_keys.local }}"
+    tags:
+      - system
+      - repo
+
+  - name: astra_general_config | Import astra-pub-nexus-key to apt
+    ansible.builtin.apt_key:
+      file: "{{ item }}"
+      state: present
+    loop: "{{ apt_keys.remote }}"
+    tags:
+      - system
+      - repo
+  
+  - name: astra_general_config | Apt update cache
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      update_cache: yes
+      force_apt_get: yes
+    ignore_errors: true
+    tags:
+      - system
+      - packages
+
+  - name: astra_general_config | Apt upgrade dist
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      update_cache: yes
+      force_apt_get: yes
+      upgrade: dist
+    ignore_errors: true
+    tags:
+      - system
+      - packages
+
+  - name: astra_general_config | Apt install deps
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      update_cache: yes
+      force_apt_get: yes
+      state: present
+      name: "{{ item }}"
+    loop: "{{ apt_deps }}"
+    ignore_errors: true
+    tags:
+      - system
+      - packages
+
+  - name: astra_general_config | Reboot
+    ansible.builtin.reboot:
+    tags:
+      - system
+      - packages
+
+  - name: astra_general_config | Set timezone to Europe/Moscow
+    community.general.timezone:
+      name: Europe/Moscow
+    tags: 
+      - system
+      - ntp

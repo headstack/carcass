@@ -1,0 +1,231 @@
+---
+
+  - name: ha_2_nodes | Flush handlers
+    meta: flush_handlers
+    tags: 
+      - ha
+      - techusers
+      - rsync
+
+  - name: Configure PasswordAuthentication=yes option in sshd_config
+    ansible.builtin.replace:
+      path: /etc/ssh/sshd_config
+      regexp: '(^PasswordAuthentication no)'
+      replace: 'PasswordAuthentication yes'
+    notify: SSHD Restart
+    tags: 
+      - ha
+      - techusers
+      - rsync
+    
+  - name: Create user nobody for rsync replication 
+    ansible.builtin.user:
+      name: "{{ item.user }}"
+      group: "{{ item.group }}"
+      create_home: yes
+      state: present
+      password: "{{ srv.rsync.RSYNCD_AUTH_PASSWD | password_hash('sha512') }}"
+    loop: "{{ tech_users_info }}"
+    tags: 
+      - ha
+      - techusers
+      - rsync
+        
+  - name: Add public keys to authorized_keys for user nobody
+    ansible.builtin.authorized_key:
+      user: "{{ item.user }}"
+      state: present
+      manage_dir: yes
+      key: "{{ item.pubkey }}"
+      comment: "{{ item.comment }}"
+    loop: "{{ tech_users_info }}"
+    tags: 
+      - ha
+      - techusers
+      - rsync
+
+  - name: Set integrity level 63 for nobody user
+    ansible.builtin.command: pdpl-user -i 63 nobody
+    tags: 
+      - ha
+      - techusers
+      - rsync
+
+  - name: Move nobody ssh-key to .ssh/ dir
+    ansible.builtin.copy:
+      src: files/core_services_main_key
+      dest: /home/nobody/.ssh/cluster_auth
+      owner: nobody
+      group: sudo
+      mode: 0600
+    tags:
+      - ha
+      - techusers
+      - rsync
+
+  - name: Create directories for configs
+    ansible.builtin.file:
+      path: "{{ item.path }}"
+      state: "{{ item.state }}"
+      mode: "{{ item.mode }}"
+      owner: "{{ item.owner }}"
+      group: "{{ item.group }}"
+    loop: "{{ config_directories }}"
+    tags:
+      - ha
+      - directories 
+      - rsync
+      - carcass
+
+  - name: Templating carcass config files
+    ansible.builtin.template:
+      src: "{{ item.src }}"
+      dest: "{{ item.dst }}"
+      mode: "{{ item.mode }}"
+      owner: "{{ item.owner }}"
+      group: "{{ item.group }}"
+      force: yes
+    loop: "{{ carcass_templates }}"
+    tags:
+      - ha
+      - carcass
+
+  - name: Move carcass script to /usr/local/sbin/
+    ansible.builtin.copy:
+      src: files/carcass_light
+      dest: /usr/local/sbin/carcass
+      owner: astra
+      group: astra
+      mode: u=rwx,g=rx,o=rx
+    tags:
+      - ha
+      - carcass
+
+  - name: ha_2_nodes | Flush handlers
+    meta: flush_handlers
+    tags:
+      - ha
+      - rsync
+
+  - name: Templating rsync config files
+    ansible.builtin.template:
+      src: "{{ item.src }}"
+      dest: "{{ item.dst }}"
+      force: yes
+      owner: "{{ item.owner }}"
+      group: "{{ item.group }}"
+      mode: "{{ item.mode }}"
+    loop: "{{ rsync_templates }}"
+    notify: Restart and active rsync
+    tags:
+      - ha
+      - rsync
+
+  - name: Template rsync synchronization scripts to /etc/systemd/system/watchers/
+    ansible.builtin.template:
+      src: templates/nexus-oss-watch.sh.j2
+      dest: /etc/systemd/system/watchers/nexus-oss-watch.sh
+      owner: root
+      group: root
+      mode: u=rwx,g=rx,o=rx
+    tags:
+      - ha
+      - rsync
+
+  - name: Move ballfresher script to /etc/cron.hourly/
+    ansible.builtin.copy:
+      src: files/ballfresher
+      dest: /etc/cron.hourly/ballfresher
+      owner: root
+      group: root
+      mode: u=rwx,g=rx,o=rx
+    tags:
+      - ha
+      - rsync
+
+  - name: ha_2_nodes | Flush handlers
+    meta: flush_handlers
+    tags:
+      - ha
+      - rsync
+
+  - name: Move systemd path, service to nexus
+    ansible.builtin.copy:
+      src: "{{ item.src }}"
+      dest: "{{ item.dst }}"
+    loop: "{{ systemd_files }}"
+    notify:
+      - fresh_path
+      - start_and_enable_path
+    tags:
+      - ha
+      - rsync
+
+  - name: ha_2_nodes | Flush handlers
+    meta: flush_handlers
+    tags: ha
+
+  - name: ha_2_nodes | Ensure net.ipv4.ip_forward = 1 parameter in /etc/sysctl.conf 
+    ansible.builtin.lineinfile:
+      path: /etc/sysctl.conf
+      search_string: 'net.ipv4.ip_forward = 0'
+      line: net.ipv4.ip_forward = 1
+      insertafter: '^# See sysctl.d(5)'
+      create: yes
+    notify: Systcl apply
+    tags: ha
+
+  - name: ha_2_nodes | Flush handlers
+    meta: flush_handlers
+    tags: ha
+
+  - name: ha_2_nodes | Ensure net.ipv4.ip_nonlocal_bind = 1 parameter in /etc/sysctl.conf 
+    ansible.builtin.lineinfile:
+      path: /etc/sysctl.conf
+      search_string: 'net.ipv4.ip_nonlocal_bind = 0'
+      line: net.ipv4.ip_nonlocal_bind = 1
+      insertafter: '^# See sysctl.d(5)'
+      create: yes
+    notify: Systcl apply
+    tags: ha
+
+  - name: Apt update cache
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      update_cache: yes
+      force_apt_get: yes
+    ignore_errors: true
+    tags: 
+      - ha
+      - keepalived
+
+  - name: Apt install deps
+    ansible.builtin.apt:
+      allow_unauthenticated: yes
+      update_cache: yes
+      force_apt_get: yes
+      state: present
+      name: "{{ item }}"
+    loop: "{{ apt_keepalived_deps }}"
+    ignore_errors: true
+    tags: 
+      - ha
+      - keepalived
+      - keepalived_packages
+      
+  - name: ha_2_nodes | Flush handlers
+    meta: flush_handlers
+    tags: 
+      - ha
+      - keepalived
+
+  - name: ha_2_nodes | Configure keepalived with template on both of haproxy cluster nodes
+    ansible.builtin.template:
+      src: keepalived.conf.j2
+      dest: /etc/keepalived/keepalived.conf
+      force: yes
+    notify: Restart and active keepalived
+    tags: 
+      - ha
+      - keepalived
+      - keepalived_config

@@ -1,0 +1,51 @@
+global_defs {
+  vrrp_garp_master_delay      3
+  vrrp_garp_master_repeat     3
+  vrrp_garp_lower_prio_delay  3
+  vrrp_garp_lower_prio_repeat 3
+  vrrp_garp_master_refresh    61
+  vrrp_garp_master_refresh_repeat 2
+  vrrp_garp_interval 0.1
+#  enable_script_security
+  script_user root
+}
+
+vrrp_script chk_application {
+
+script {{ srv.keepalived_general.check_command }}       # Specifies the command along with any arguments to be executed as Check script.
+interval {{ srv.keepalived_general.check_interval }}                   # Time in seconds to repeat execution of script. In this example keepalived state checked every 2 seconds
+weight {{ srv.keepalived_general.node_weight }}                    # Specified the number by which current priority of router will be reduced after entering FAULT state.
+rise {{ srv.keepalived_general.rise_count }}                       # Specified the number of attempts (with zero exit code returned by script) before exiting the ROUTER from FAULT state. 
+fall {{ srv.keepalived_general.fall_count }}                       # Specified the number of attempts (with non-zero exit code returned by script) before changing the Router to FAULT state.
+timeout {{ srv.keepalived_general.considering_timeout }}                    # Router will wait for number of seconds specified as timeout value before considering the script exit code as non-zero.
+  }
+ 
+vrrp_instance {{ srv.keepalived_general.vrrp_instance_name }} {     # VRRP Instanse name
+interface {{ srv.keepalived_general.vrrp_interface }}               # Virtual IP Address will be assigned to network interface defined against interfaceproperty.
+state {{ keepalived.vrrp_state }}                 # Defines the default state of ROUTER as MASTER or BACKUP.
+virtual_router_id {{ srv.keepalived_general.vrrp_id }}         # Assign one ID for this route
+priority {{ keepalived.vrrp_priority }}                 # Defines the priority of Virtual Router instance. The priority defined for MASTER node shall be higher than all BACKUP nodes. 100 on master, 98 on backup
+advert_int 1                 # Specifies the time interval in seconds for Virtual Router to advertise it’s current state to other member nodes of the same cluster.
+
+unicast_src_ip {{ keepalived.current_node_unicast_ip_addr }}     # Unicast addr of the current node. Need for sw-over MASTER node, when MASTER node is shutting down.
+  unicast_peer {
+  {{ keepalived.secondary_node_unicast_ip_addr }}       # Unicast addr of the secondary node. Need for sw-over MASTER node, when MASTER node is shutting down.
+  }
+
+authentication {
+  auth_type PASS             # Specifies the type of authentication to be used by VRRP.
+  auth_pass {{ srv.keepalived_general.auth_pass }}         # Specifies the password for password authentication of current VRRP router.
+  }
+
+virtual_ipaddress {          # Defines the virtual IP address of a VRRP router.
+  {{ srv.keepalived_general.vrrp_vip_params }}    # the virtual IP on external network for portal
+  }
+ 
+track_script {               # Specifies the track script for VRRP router.
+  chk_application
+  }
+
+track_interface {
+  {{ srv.keepalived_general.track_interface }}    # Interface for tracking working nodes
+  }
+}

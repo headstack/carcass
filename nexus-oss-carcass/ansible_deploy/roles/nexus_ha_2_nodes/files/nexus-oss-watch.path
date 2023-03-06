@@ -1,0 +1,9 @@
+[Unit]
+Description= Tracking NEXUS-OSS REPODATA Files Changes
+
+[Path]
+PathModified=/var/lib/docker/volumes/nexus-data
+PathModified=/var/lib/docker/volumes/nexus-data/_data
+
+[Install]
+WantedBy=multi-user.target

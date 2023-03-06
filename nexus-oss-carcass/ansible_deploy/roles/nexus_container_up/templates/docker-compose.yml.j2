@@ -1,0 +1,10 @@
+version: "3.4"
+ 
+services:
+  nexus:
+    container_name: nexus
+    image: sonatype/nexus3:latest
+    volumes:
+      - /var/lib/docker/volumes/nexus-data/_data:/nexus-data
+    network_mode: host
+    restart: always
